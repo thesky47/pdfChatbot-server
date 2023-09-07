@@ -17,7 +17,7 @@ from langchain.prompts import PromptTemplate
 from langchain.vectorstores import Pinecone
 from langchain.document_loaders import PyPDFLoader
 import pinecone 
-from langchain.memory import PostgresChatMessageHistory, ConversationBufferWindowMemory
+from langchain.memory import PostgresChatMessageHistory, ConversationBufferWindowMemory, CombinedMemory,   ConversationSummaryMemory
 
 def get_filename_from_path(file_path):
     # Use os.path.basename to get the filename from the file path
@@ -43,7 +43,7 @@ def upload_file(file, user_fname, session_id):
     index_name = "langchain-demo"
 
     if index_name not in pinecone.list_indexes():
-        # we create a new index
+        # we create a new indexs
         pinecone.create_index(
             name=index_name,
             metric='cosine',
@@ -51,8 +51,8 @@ def upload_file(file, user_fname, session_id):
         )
 
     return Pinecone.from_documents(
-        docs, embeddings, index_name=index_name, namespace=user_fname
-    )
+        docs, embeddings, index_name=index_name 
+    )#namespace=user_fname
     # # define retriever
     # retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": k})
 
@@ -74,7 +74,7 @@ class ChatSessionListView(generics.ListCreateAPIView):
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, fields=('id', 'title', 'description'), many=True)
+        serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
     def create(self, request, *args, **kwargs):
@@ -99,7 +99,7 @@ class ChatSessionListView(generics.ListCreateAPIView):
         if serializer.is_valid(raise_exception=True):
             session = serializer.save()
             try:
-                db = upload_file(f".{session.pdf_file.url}", session.creator.first_name, str(session.id))
+                db = upload_file(f".{session.pdf_file.url}", f"{session.creator.first_name}_{session.creator.id}", str(session.id))
                 history = PostgresChatMessageHistory(
                     connection_string=f'postgresql://{os.getenv("DB_USER")}:{os.getenv("DB_PASSWORD")}@{os.getenv("DB_HOST")}:{os.getenv("DB_PORT")}/{os.getenv("DB_NAME")}',
                     session_id=str(session.id),
@@ -110,6 +110,7 @@ class ChatSessionListView(generics.ListCreateAPIView):
             
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 class ConverseView(views.APIView):
@@ -123,6 +124,12 @@ class ConverseView(views.APIView):
     ```
 
     ```
+    Summary of Conversation:
+    {history}
+
+    ```
+
+    ```
     Current conversation:
     {chat_history}
     ````
@@ -131,7 +138,7 @@ class ConverseView(views.APIView):
     Chatbot:"""
 
     prompt = PromptTemplate(
-        input_variables=["chat_history", "human_input", "context"], template=template
+        input_variables=["chat_history", "human_input", "history", "context"], template=template
     )
     
     def post(self, request, session_id):
@@ -143,8 +150,11 @@ class ConverseView(views.APIView):
                 session_id=str(session_id),
             )
 
-            memory = ConversationBufferWindowMemory(chat_memory=history, memory_key="chat_history", input_key="human_input", k=3)
-
+            curr_memory = ConversationBufferWindowMemory(chat_memory=history, memory_key="chat_history", input_key="human_input", k=3)
+            summary_memory = ConversationSummaryMemory(chat_memory=history, llm=OpenAI(), input_key="human_input")
+            # Combined
+            memory = CombinedMemory(memories=[curr_memory, summary_memory])
+            
             pinecone.init(
                 api_key=settings.PINECONE_API_KEY,  
                 environment=settings.PINECONE_ENV, 
@@ -153,18 +163,23 @@ class ConverseView(views.APIView):
             index = pinecone.Index("langchain-demo")
             embeddings = OpenAIEmbeddings()
             vector_store = Pinecone(index, embeddings.embed_query, "text")
-            retriever = vector_store.as_retriever()
+            retriever = vector_store.as_retriever(search_kwargs={"filter" : {"session_id" : str(session.id)} })
             matched_docs = retriever.get_relevant_documents(query)
+
+            # matched_docs = PyPDFLoader("insightsonindia.com-UN Resolution on Kashmir in 1947.pdf").load()
             chain = load_qa_chain(
                 OpenAI(temperature=0), 
                 chain_type="stuff", 
                 memory=memory, 
-                prompt=self.prompt
+                prompt=self.prompt,
+                verbose=True
             )
             response = chain({"input_documents": matched_docs, "human_input": query}, return_only_outputs=True)
 
-            print(memory.buffer)
-            return Response({"response" : response, "History" : memory.buffer})
+            print(memory.memories[0].buffer)
+            print()
+            print(memory.memories[1].buffer)
+            return Response({"response" : response, "History" :memory.memories[0].buffer, "Summary" :  memory.memories[1].buffer})
 
 
 class ChatSessionDetailView(generics.RetrieveAPIView):
