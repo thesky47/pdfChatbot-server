@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'user_management',
+    'chat_sessions',
     'drf_spectacular',
     'rest_framework_simplejwt.token_blacklist',
     

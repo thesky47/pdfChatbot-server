@@ -4,9 +4,9 @@ from .models import ChatSession
 class ChatSessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatSession
-        fields = ('id', 'title', 'description', 'pdf_file', 'creator', 'users')
+        fields = ('id', 'title', 'description', 'pdf_file', 'creator')
 
-class ConversationSerializer(serializers.serializer):
+class ConversationSerializer(serializers.Serializer):
     session_id = serializers.UUIDField(required=False)
     userMessage = serializers.CharField()
     AIMessage = serializers.CharField(required=False)
